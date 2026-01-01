@@ -88,12 +88,8 @@ class ApiClient {
       RetryInterceptor(
         dio: _dio,
         logPrint: debugPrint,
-        retries: 3,
-        retryDelays: const [
-          Duration(seconds: 1),
-          Duration(seconds: 2),
-          Duration(seconds: 3),
-        ],
+        retries: NetworkConstants.maxRetries,
+        retryDelays: NetworkConstants.retryDelays,
         retryEvaluator: (error, attempt) {
           if (error.type == DioExceptionType.connectionError) {
             return false;

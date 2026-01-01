@@ -1,10 +1,12 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import '../network_constants.dart';
+
 class CircuitBreakerInterceptor extends Interceptor {
   int _failureCount = 0;
-  static const int _threshold = 5;
-  static const Duration _resetInterval = Duration(seconds: 30);
+  static const int _threshold = NetworkConstants.circuitBreakerThreshold;
+  static const Duration _resetInterval = NetworkConstants.circuitBreakerReset;
   DateTime? _lastFailureTime;
   bool _isOpen = false;
 

@@ -15,7 +15,7 @@ class NotificationService {
       final AppLifecycleState? state = WidgetsBinding.instance.lifecycleState;
       final bool isActuallyForeground = state == AppLifecycleState.resumed;
 
-      print(
+      debugPrint(
         '[NOTIFICATION] init: isBackgroundParam=$isBackground, lifecycleState=$state, isActuallyForeground=$isActuallyForeground',
       );
 
@@ -29,7 +29,7 @@ class NotificationService {
       try {
         await _notificationsPlugin.initialize(initializationSettings);
       } catch (initError) {
-        print('[NOTIFICATION] Native Initialize Error: $initError');
+        debugPrint('[NOTIFICATION] Native Initialize Error: $initError');
         if (isBackground) return; // Silent return if in background
         rethrow;
       }
@@ -46,12 +46,12 @@ class NotificationService {
         if (androidImplementation != null) {
           final bool? granted = await androidImplementation
               .requestNotificationsPermission();
-          print(
+          debugPrint(
             '[NOTIFICATION] Service initialized. Permission granted: $granted',
           );
         }
       } else {
-        print(
+        debugPrint(
           '[NOTIFICATION] Skipping permission request: isBackground=$isBackground, isActuallyForeground=$isActuallyForeground',
         );
       }
@@ -63,7 +63,7 @@ class NotificationService {
             'Notification service initialized. IsBackground: $isBackground, State: $state',
       );
     } catch (e) {
-      print('[NOTIFICATION] Outer Initialization Error: $e');
+      debugPrint('[NOTIFICATION] Outer Initialization Error: $e');
       await LoggerService.log(
         level: LogLevel.error,
         category: 'notifications',
@@ -78,7 +78,9 @@ class NotificationService {
     required String body,
   }) async {
     try {
-      print('[NOTIFICATION] Attempting to show notification: $id | $title');
+      debugPrint(
+        '[NOTIFICATION] Attempting to show notification: $id | $title',
+      );
       AndroidNotificationDetails androidPlatformChannelSpecifics =
           AndroidNotificationDetails(
             'background_sync_channel',
@@ -98,14 +100,14 @@ class NotificationService {
         body,
         platformChannelSpecifics,
       );
-      print('[NOTIFICATION] Notification $id sent successfully');
+      debugPrint('[NOTIFICATION] Notification $id sent successfully');
       await LoggerService.log(
         level: LogLevel.info,
         category: 'notifications',
         message: 'Notification sent: $id | $title',
       );
     } catch (e) {
-      print('[NOTIFICATION] Show Error: $e');
+      debugPrint('[NOTIFICATION] Show Error: $e');
       await LoggerService.log(
         level: LogLevel.error,
         category: 'notifications',

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/scheduler.dart';
+
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -48,14 +48,8 @@ class AppDevToolsController {
   );
 
   // Metrics
-  final ValueNotifier<double> fps = ValueNotifier<double>(60.0);
   final ValueNotifier<double> memoryUsage = ValueNotifier<double>(0.0); // In MB
   final ValueNotifier<double> cacheSize = ValueNotifier<double>(0.0); // In MB
-
-  // FPS tracking - smoothed
-  final List<double> _fpsHistory = [];
-  static const int _fpsSampleCount = 10;
-  Duration? _lastFrameTime;
 
   void init({required bool enableDevTools}) {
     enabled = enableDevTools;
@@ -209,11 +203,8 @@ class AppDevToolsController {
   }
 
   void _startMetricsTicking() {
-    // FPS Tracking using persistent frame callback
-    SchedulerBinding.instance.addPersistentFrameCallback(_onFrame);
-
     // Periodic updates for memory and cache
-    _metricsTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+    _metricsTimer = Timer.periodic(const Duration(milliseconds: 2000), (_) {
       if (!enabled || !isMonitoringActive.value) return;
       _updateMemoryUsage();
     });
@@ -223,29 +214,6 @@ class AppDevToolsController {
       if (!enabled) return;
       _calculateCacheSize();
     });
-  }
-
-  void _onFrame(Duration timestamp) {
-    if (!enabled || !isMonitoringActive.value) return;
-
-    if (_lastFrameTime != null) {
-      final durationMicro =
-          timestamp.inMicroseconds - _lastFrameTime!.inMicroseconds;
-      if (durationMicro > 0) {
-        final instantFps = 1000000.0 / durationMicro;
-
-        // Add to history and maintain window size
-        _fpsHistory.add(instantFps);
-        if (_fpsHistory.length > _fpsSampleCount) {
-          _fpsHistory.removeAt(0);
-        }
-
-        // Calculate smoothed average
-        final avgFps = _fpsHistory.reduce((a, b) => a + b) / _fpsHistory.length;
-        fps.value = avgFps.clamp(0.0, 120.0); // Clamp to reasonable range
-      }
-    }
-    _lastFrameTime = timestamp;
   }
 
   void _updateMemoryUsage() {
@@ -267,7 +235,6 @@ class AppDevToolsController {
     isMonitoringActive.dispose();
     logCount.dispose();
     currentEnv.dispose();
-    fps.dispose();
     memoryUsage.dispose();
     cacheSize.dispose();
   }

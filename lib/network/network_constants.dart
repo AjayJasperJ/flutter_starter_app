@@ -15,4 +15,17 @@ class NetworkConstants {
   };
 
   static const Duration maxCacheAge = Duration(days: 30);
+  static const int maxCacheItems = 200;
+
+  // Circuit Breaker
+  static const int circuitBreakerThreshold = 5;
+  static const Duration circuitBreakerReset = Duration(seconds: 30);
+
+  // Retry Policy
+  static const int maxRetries = 3;
+  static const List<Duration> retryDelays = [
+    Duration(seconds: 1),
+    Duration(seconds: 2),
+    Duration(seconds: 3),
+  ];
 }

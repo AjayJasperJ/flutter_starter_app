@@ -7,7 +7,7 @@ import '../network_constants.dart';
 class CacheInterceptor extends Interceptor {
   final Box _cacheBox;
   static const Duration maxCacheAge = NetworkConstants.maxCacheAge;
-  static const int maxItems = 200; // LRU Item Limit
+  static const int maxItems = NetworkConstants.maxCacheItems; // LRU Item Limit
 
   CacheInterceptor(this._cacheBox);
 

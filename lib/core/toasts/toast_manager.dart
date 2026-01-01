@@ -85,6 +85,23 @@ class ToastManager {
     );
   }
 
+  static void showToast({
+    required String message,
+    String? submessage,
+    required ToastificationType type,
+  }) {
+    toastification.show(
+      title: Txt(message, size: Dimen.s16, weight: Font.medium),
+      description: (submessage != null && submessage.trim().isNotEmpty)
+          ? Text(submessage)
+          : null,
+      type: type,
+      style: ToastificationStyle.flat,
+      autoCloseDuration: const Duration(seconds: 4),
+      alignment: Alignment.topCenter,
+    );
+  }
+
   static void dismiss() {
     if (_current != null) {
       toastification.dismiss(_current!, showRemoveAnimation: false);
