@@ -1,0 +1,243 @@
+import 'package:dio/dio.dart';
+import 'package:hive/hive.dart';
+import 'package:flutter/foundation.dart';
+import '../utils/connectivity_service.dart';
+import '../network_constants.dart';
+
+class CacheInterceptor extends Interceptor {
+  final Box _cacheBox;
+  static const Duration maxCacheAge = NetworkConstants.maxCacheAge;
+  static const int maxItems = 200; // LRU Item Limit
+
+  CacheInterceptor(this._cacheBox);
+
+  @override
+  void onRequest(
+    RequestOptions options,
+    RequestInterceptorHandler handler,
+  ) async {
+    // Only cache GET requests
+    if (options.method != 'GET') {
+      return handler.next(options);
+    }
+
+    // If we have internet, proceed to network
+    bool isOnline = ConnectivityService().hasConnection;
+    if (isOnline) {
+      return handler.next(options);
+    }
+
+    // If offline, check cache
+    final key = options.uri.toString();
+    final cachedEntry = _cacheBox.get(key);
+
+    if (cachedEntry != null && cachedEntry is Map) {
+      final timestampStr = cachedEntry['timestamp'] as String?;
+      final lastAccessedStr = cachedEntry['lastAccessed'] as String?;
+
+      if (timestampStr != null) {
+        final timestamp = DateTime.parse(timestampStr);
+        final lastAccessed = lastAccessedStr != null
+            ? DateTime.parse(lastAccessedStr)
+            : timestamp;
+        final now = DateTime.now();
+
+        // Check if data is too old (created > 30 days ago)
+        // OR hasn't been used in 30 days
+        if (now.difference(timestamp) > maxCacheAge ||
+            now.difference(lastAccessed) > maxCacheAge) {
+          debugPrint('[CACHE] Purging expired data for: $key');
+          _cacheBox.delete(key);
+          return handler.next(options);
+        }
+
+        // Update last accessed timestamp
+        _cacheBox.put(key, {
+          ...Map<String, dynamic>.from(cachedEntry),
+          'lastAccessed': now.toIso8601String(),
+        });
+      }
+
+      final data = cachedEntry['data'];
+
+      debugPrint(
+        '[CACHE] Serving offline data for: $key (cached at: $timestampStr)',
+      );
+
+      return handler.resolve(
+        Response(
+          requestOptions: options,
+          data: data,
+          statusCode: 200,
+          statusMessage: 'OK (Cached)',
+          extra: Map.from(options.extra)..['isFromCache'] = true,
+        ),
+      );
+    } else {
+      // No cache and no internet
+      return handler.next(options);
+    }
+  }
+
+  @override
+  void onError(DioException err, ErrorInterceptorHandler handler) async {
+    // Network-first, fallback to cache strategy
+    if (err.requestOptions.method == 'GET' && _isNetworkError(err)) {
+      final key = err.requestOptions.uri.toString();
+      final cachedEntry = _cacheBox.get(key);
+
+      debugPrint('[CACHE DEBUG] Network Error Type: ${err.type}');
+      debugPrint('[CACHE DEBUG] Error Message: ${err.message}');
+      debugPrint('[CACHE DEBUG] Key: $key');
+      debugPrint('[CACHE DEBUG] Cache Exists: ${cachedEntry != null}');
+
+      if (cachedEntry != null && cachedEntry is Map) {
+        final timestampStr = cachedEntry['timestamp'] as String?;
+        final lastAccessedStr = cachedEntry['lastAccessed'] as String?;
+
+        if (timestampStr != null) {
+          final timestamp = DateTime.parse(timestampStr);
+          final lastAccessed = lastAccessedStr != null
+              ? DateTime.parse(lastAccessedStr)
+              : timestamp;
+          final now = DateTime.now();
+
+          if (now.difference(timestamp) > maxCacheAge ||
+              now.difference(lastAccessed) > maxCacheAge) {
+            debugPrint('[CACHE] Purging expired data (onError) for: $key');
+            _cacheBox.delete(key);
+            return super.onError(err, handler);
+          }
+
+          // Update last accessed timestamp
+          _cacheBox.put(key, {
+            ...Map<String, dynamic>.from(cachedEntry),
+            'lastAccessed': now.toIso8601String(),
+          });
+        }
+
+        final data = cachedEntry['data'];
+
+        debugPrint(
+          '[CACHE] Network failed. Serving cached data for: $key (cached at: $timestampStr)',
+        );
+
+        // Hive often returns Map<dynamic, dynamic>, but Dio/Freezed expects Map<String, dynamic>
+        final castData = _castToMapStringDynamic(data);
+
+        return handler.resolve(
+          Response(
+            requestOptions: err.requestOptions,
+            data: castData,
+            statusCode: 200,
+            statusMessage: 'OK (Cached Fallback)',
+            extra: Map.from(err.requestOptions.extra)..['isFromCache'] = true,
+          ),
+        );
+      } else {
+        debugPrint('[CACHE] No cache found for $key');
+      }
+    } else {
+      debugPrint(
+        '[CACHE DEBUG] Fallback skipped. Method: ${err.requestOptions.method}, IsNetworkError: ${_isNetworkError(err)}',
+      );
+    }
+    super.onError(err, handler);
+  }
+
+  // Recursive casting helper
+  dynamic _castToMapStringDynamic(dynamic data) {
+    if (data is Map) {
+      return data.map<String, dynamic>(
+        (key, value) =>
+            MapEntry(key.toString(), _castToMapStringDynamic(value)),
+      );
+    } else if (data is List) {
+      return data.map((e) => _castToMapStringDynamic(e)).toList();
+    }
+    return data;
+  }
+
+  bool _isNetworkError(DioException err) {
+    return err.type == DioExceptionType.connectionError ||
+        err.type == DioExceptionType.connectionTimeout ||
+        err.type == DioExceptionType.receiveTimeout ||
+        err.type == DioExceptionType.sendTimeout ||
+        err.type == DioExceptionType.unknown ||
+        (err.error != null &&
+            err.error.toString().toLowerCase().contains('socket'));
+  }
+
+  @override
+  void onResponse(Response response, ResponseInterceptorHandler handler) {
+    // Save successful GET responses to cache with timestamp
+    if (response.requestOptions.method == 'GET' &&
+        response.statusCode != null &&
+        response.statusCode! >= 200 &&
+        response.statusCode! < 300) {
+      final key = response.requestOptions.uri.toString();
+      final now = DateTime.now().toIso8601String();
+
+      // Store data with creation timestamp and lastAccessed
+      _cacheBox.put(key, {
+        'data': response.data,
+        'timestamp': now,
+        'lastAccessed': now,
+      });
+
+      _performLRU();
+    }
+    super.onResponse(response, handler);
+  }
+
+  /// Keep box size under maxItems by removing old entries
+  void _performLRU() {
+    if (_cacheBox.length <= maxItems) return;
+
+    final sortedKeys = _cacheBox.keys.toList()
+      ..sort((a, b) {
+        final entryA = _cacheBox.get(a) as Map?;
+        final entryB = _cacheBox.get(b) as Map?;
+        final timeA = entryA?['lastAccessed'] as String? ?? '';
+        final timeB = entryB?['lastAccessed'] as String? ?? '';
+        return timeA.compareTo(timeB);
+      });
+
+    final keysToRemove = sortedKeys.take(_cacheBox.length - maxItems);
+    _cacheBox.deleteAll(keysToRemove);
+    debugPrint('[CACHE] LRU evicted ${keysToRemove.length} items.');
+  }
+
+  /// Bulk prune expired cache entries
+  Future<void> pruneCache() async {
+    if (_cacheBox.isEmpty) return;
+
+    final now = DateTime.now();
+    final keysToDelete = <dynamic>[];
+
+    for (final key in _cacheBox.keys) {
+      final entry = _cacheBox.get(key);
+      if (entry is Map) {
+        final timestampStr = entry['timestamp'] as String?;
+        final lastAccessedStr = entry['lastAccessed'] as String?;
+
+        if (timestampStr != null) {
+          final timestamp = DateTime.parse(timestampStr);
+          final lastAccessed = lastAccessedStr != null
+              ? DateTime.parse(lastAccessedStr)
+              : timestamp;
+
+          if (now.difference(timestamp) > maxCacheAge ||
+              now.difference(lastAccessed) > maxCacheAge) {
+            keysToDelete.add(key);
+          }
+        }
+      }
+    }
+
+    if (keysToDelete.isNotEmpty) {
+      debugPrint('[CACHE] Pruning ${keysToDelete.length} expired entries.');
+      await _cacheBox.deleteAll(keysToDelete);
+    }
+  }
+}
