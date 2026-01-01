@@ -5,7 +5,7 @@ import 'package:workmanager/workmanager.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 
 import '../../dev_tools/features/environment_switcher/environment_controller.dart';
-import '../../services/notification_service.dart';
+import '../../core/utils/notification_service.dart';
 import '../api_services/api_client.dart';
 import '../utils/logger_services.dart';
 

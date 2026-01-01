@@ -5,7 +5,7 @@ import '../../../core/constants/dimensions.dart';
 import '../../../data/token_storage.dart';
 import '../../../network/api_services/api_client.dart';
 import '../../../routes/route_services.dart';
-import '../../../services/notification_service.dart';
+import '../../../core/utils/notification_service.dart';
 import '../../dev_tools_controller.dart';
 import '../logs/logs_controller.dart';
 import '../network_inspector/network_controller.dart';

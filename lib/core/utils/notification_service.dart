@@ -1,6 +1,6 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import '../network/utils/logger_services.dart';
+import '../../network/utils/logger_services.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
