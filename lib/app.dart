@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:toastification/toastification.dart';
 import '../../../core/config/keyboard_dismiss_observer.dart';
 import '../../../core/config/overscroll_disable.dart';
 import '../../../core/themes/theme.dart';
@@ -11,7 +12,6 @@ import '../../../routes/app_routes.dart';
 import '../../../routes/route_services.dart';
 import '../../../dev_tools/widgets/dev_tools_overlay.dart';
 import '../../../dev_tools/dev_tools_constants.dart';
-import 'package:toastification/toastification.dart';
 
 class MyApp extends StatefulWidget {
   final bool enableScale;

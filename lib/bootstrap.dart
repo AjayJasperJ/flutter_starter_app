@@ -6,8 +6,6 @@ import '../../../core/config/environment.dart';
 import '../../../core/utils/deeplink_services.dart';
 import '../../../data/token_storage.dart';
 import '../../../network/services/background_sync_service.dart';
-import 'dev_tools/dev_tools_controller.dart';
-import 'dev_tools/features/environment_switcher/environment_controller.dart';
 import '../../../network/utils/connectivity_service.dart';
 import '../../../network/utils/logger_services.dart';
 import '../../../network/managers/offline_sync_manager.dart';
@@ -16,6 +14,8 @@ import 'dev_tools/features/feature_flags/feature_flag_controller.dart';
 import 'dev_tools/features/mocking/mock_controller.dart';
 import 'dev_tools/features/network_throttling/network_throttling_controller.dart';
 import 'dev_tools/dev_tools_constants.dart';
+import 'dev_tools/dev_tools_controller.dart';
+import 'dev_tools/features/environment_switcher/environment_controller.dart';
 
 Future<void> bootstrap({
   bool enableDevTools = DevToolsConstants.kIncludeDevTools,

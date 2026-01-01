@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import '../../../core/config/provider_routes.dart';
 import 'package:provider/provider.dart';
+import '../../../core/config/provider_routes.dart';
 import '../../../app.dart';
 import '../../../bootstrap.dart';
 
