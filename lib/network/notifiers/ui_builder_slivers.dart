@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../api_services/api_error.dart';
 import '../api_services/state_response.dart';
+import '../utils/network_utils.dart';
 
 class UiBuilderSlivers<T> extends StatelessWidget {
   final StateResponse<dynamic>? response;
@@ -12,7 +13,6 @@ class UiBuilderSlivers<T> extends StatelessWidget {
   final List<Widget> Function(T? data)? onRefreshing;
   final VoidCallback? onRetry;
   final void Function(StateResponse<dynamic>? response)? listener;
-
   const UiBuilderSlivers({
     super.key,
     this.response,
@@ -31,6 +31,11 @@ class UiBuilderSlivers<T> extends StatelessWidget {
     if (listener != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         listener!(response);
+      });
+    }
+    if (response?.isFromCache == true) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        NetworkUtils.notifyCacheUse(context);
       });
     }
     return SliverMainAxisGroup(slivers: _buildSlivers());
@@ -63,10 +68,7 @@ class UiBuilderSlivers<T> extends StatelessWidget {
             onRefreshing?.call(castData(response?.data)) ?? onSuccess(castData(response?.data));
 
         if (onRefreshing == null) {
-          return [
-            const SliverToBoxAdapter(child: LinearProgressIndicator(minHeight: 2)),
-            ...content,
-          ];
+          return [...content];
         }
         return content;
       case States.failure:

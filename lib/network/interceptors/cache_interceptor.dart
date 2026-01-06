@@ -1,23 +1,26 @@
 import 'package:dio/dio.dart';
 import 'package:hive/hive.dart';
 import 'package:flutter/foundation.dart';
-import '../utils/connectivity_service.dart';
 import '../network_constants.dart';
+import '../utils/connectivity_service.dart';
+import '../utils/network_utils.dart';
 
 class CacheInterceptor extends Interceptor {
   final Box _cacheBox;
-  static const Duration maxCacheAge = NetworkConstants.maxCacheAge;
+  static const Duration maxCacheAge = Duration(days: NetworkConstants.defaultCacheDurationDays);
   static const int maxItems = NetworkConstants.maxCacheItems; // LRU Item Limit
 
   CacheInterceptor(this._cacheBox);
 
   @override
-  void onRequest(
-    RequestOptions options,
-    RequestInterceptorHandler handler,
-  ) async {
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
     // Only cache GET requests
     if (options.method != 'GET') {
+      return handler.next(options);
+    }
+
+    // Check disableCache flag
+    if (options.extra['disableCache'] == true) {
       return handler.next(options);
     }
 
@@ -34,19 +37,21 @@ class CacheInterceptor extends Interceptor {
     if (cachedEntry != null && cachedEntry is Map) {
       final timestampStr = cachedEntry['timestamp'] as String?;
       final lastAccessedStr = cachedEntry['lastAccessed'] as String?;
+      final storageDurationMs = cachedEntry['storageDurationMs'] as int?;
 
       if (timestampStr != null) {
         final timestamp = DateTime.parse(timestampStr);
-        final lastAccessed = lastAccessedStr != null
-            ? DateTime.parse(lastAccessedStr)
-            : timestamp;
+        final lastAccessed = lastAccessedStr != null ? DateTime.parse(lastAccessedStr) : timestamp;
         final now = DateTime.now();
 
-        // Check if data is too old (created > 30 days ago)
-        // OR hasn't been used in 30 days
-        if (now.difference(timestamp) > maxCacheAge ||
-            now.difference(lastAccessed) > maxCacheAge) {
-          debugPrint('[CACHE] Purging expired data for: $key');
+        // Use stored duration if available, otherwise default to maxCacheAge
+        final entryMaxAge = storageDurationMs != null
+            ? Duration(milliseconds: storageDurationMs)
+            : maxCacheAge;
+
+        // Check expiry based on specific entry duration
+        if (now.difference(timestamp) > entryMaxAge || now.difference(lastAccessed) > entryMaxAge) {
+          debugPrint('[CACHE] Purging expired data for: $key (Limit: ${entryMaxAge.inMinutes}m)');
           _cacheBox.delete(key);
           return handler.next(options);
         }
@@ -60,9 +65,7 @@ class CacheInterceptor extends Interceptor {
 
       final data = cachedEntry['data'];
 
-      debugPrint(
-        '[CACHE] Serving offline data for: $key (cached at: $timestampStr)',
-      );
+      debugPrint('[CACHE] Serving offline data for: $key (cached at: $timestampStr)');
 
       return handler.resolve(
         Response(
@@ -81,6 +84,11 @@ class CacheInterceptor extends Interceptor {
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
+    // Check disableCache flag first
+    if (err.requestOptions.extra['disableCache'] == true) {
+      return handler.next(err);
+    }
+
     // Network-first, fallback to cache strategy
     if (err.requestOptions.method == 'GET' && _isNetworkError(err)) {
       final key = err.requestOptions.uri.toString();
@@ -94,6 +102,7 @@ class CacheInterceptor extends Interceptor {
       if (cachedEntry != null && cachedEntry is Map) {
         final timestampStr = cachedEntry['timestamp'] as String?;
         final lastAccessedStr = cachedEntry['lastAccessed'] as String?;
+        final storageDurationMs = cachedEntry['storageDurationMs'] as int?;
 
         if (timestampStr != null) {
           final timestamp = DateTime.parse(timestampStr);
@@ -102,9 +111,15 @@ class CacheInterceptor extends Interceptor {
               : timestamp;
           final now = DateTime.now();
 
-          if (now.difference(timestamp) > maxCacheAge ||
-              now.difference(lastAccessed) > maxCacheAge) {
-            debugPrint('[CACHE] Purging expired data (onError) for: $key');
+          final entryMaxAge = storageDurationMs != null
+              ? Duration(milliseconds: storageDurationMs)
+              : maxCacheAge;
+
+          if (now.difference(timestamp) > entryMaxAge ||
+              now.difference(lastAccessed) > entryMaxAge) {
+            debugPrint(
+              '[CACHE] Purging expired data (onError) for: $key (Limit: ${entryMaxAge.inMinutes}m)',
+            );
             _cacheBox.delete(key);
             return super.onError(err, handler);
           }
@@ -123,7 +138,7 @@ class CacheInterceptor extends Interceptor {
         );
 
         // Hive often returns Map<dynamic, dynamic>, but Dio/Freezed expects Map<String, dynamic>
-        final castData = _castToMapStringDynamic(data);
+        final castData = NetworkUtils.castToMapStringDynamic(data);
 
         return handler.resolve(
           Response(
@@ -145,31 +160,22 @@ class CacheInterceptor extends Interceptor {
     super.onError(err, handler);
   }
 
-  // Recursive casting helper
-  dynamic _castToMapStringDynamic(dynamic data) {
-    if (data is Map) {
-      return data.map<String, dynamic>(
-        (key, value) =>
-            MapEntry(key.toString(), _castToMapStringDynamic(value)),
-      );
-    } else if (data is List) {
-      return data.map((e) => _castToMapStringDynamic(e)).toList();
-    }
-    return data;
-  }
-
   bool _isNetworkError(DioException err) {
     return err.type == DioExceptionType.connectionError ||
         err.type == DioExceptionType.connectionTimeout ||
         err.type == DioExceptionType.receiveTimeout ||
         err.type == DioExceptionType.sendTimeout ||
         err.type == DioExceptionType.unknown ||
-        (err.error != null &&
-            err.error.toString().toLowerCase().contains('socket'));
+        (err.error != null && err.error.toString().toLowerCase().contains('socket'));
   }
 
   @override
   void onResponse(Response response, ResponseInterceptorHandler handler) {
+    // Check disableCache flag
+    if (response.requestOptions.extra['disableCache'] == true) {
+      return handler.next(response);
+    }
+
     // Save successful GET responses to cache with timestamp
     if (response.requestOptions.method == 'GET' &&
         response.statusCode != null &&
@@ -178,12 +184,19 @@ class CacheInterceptor extends Interceptor {
       final key = response.requestOptions.uri.toString();
       final now = DateTime.now().toIso8601String();
 
-      // Store data with creation timestamp and lastAccessed
-      _cacheBox.put(key, {
+      final Duration? cacheDuration = response.requestOptions.extra['cacheStorageDuration'];
+      final Map<String, dynamic> cacheEntry = {
         'data': response.data,
         'timestamp': now,
         'lastAccessed': now,
-      });
+      };
+
+      if (cacheDuration != null) {
+        cacheEntry['storageDurationMs'] = cacheDuration.inMilliseconds;
+      }
+
+      // Store data with creation timestamp and lastAccessed
+      _cacheBox.put(key, cacheEntry);
 
       _performLRU();
     }
@@ -211,15 +224,14 @@ class CacheInterceptor extends Interceptor {
   /// Bulk prune expired cache entries
   Future<void> pruneCache() async {
     if (_cacheBox.isEmpty) return;
-
     final now = DateTime.now();
     final keysToDelete = <dynamic>[];
-
     for (final key in _cacheBox.keys) {
       final entry = _cacheBox.get(key);
       if (entry is Map) {
         final timestampStr = entry['timestamp'] as String?;
         final lastAccessedStr = entry['lastAccessed'] as String?;
+        final storageDurationMs = entry['storageDurationMs'] as int?;
 
         if (timestampStr != null) {
           final timestamp = DateTime.parse(timestampStr);
@@ -227,8 +239,12 @@ class CacheInterceptor extends Interceptor {
               ? DateTime.parse(lastAccessedStr)
               : timestamp;
 
-          if (now.difference(timestamp) > maxCacheAge ||
-              now.difference(lastAccessed) > maxCacheAge) {
+          final entryMaxAge = storageDurationMs != null
+              ? Duration(milliseconds: storageDurationMs)
+              : maxCacheAge;
+
+          if (now.difference(timestamp) > entryMaxAge ||
+              now.difference(lastAccessed) > entryMaxAge) {
             keysToDelete.add(key);
           }
         }

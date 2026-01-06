@@ -128,4 +128,10 @@ class MockController {
       await updateRule(rule.copyWith(isEnabled: !rule.isEnabled));
     }
   }
+
+  Future<void> clearRules() async {
+    final box = Hive.box(_boxName);
+    await box.clear();
+    rules.value = [];
+  }
 }

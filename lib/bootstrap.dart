@@ -1,5 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_starter_app/dev_tools/dev_tools_constants.dart';
+import 'package:flutter_starter_app/dev_tools/dev_tools_controller.dart';
+import 'package:flutter_starter_app/dev_tools/features/auth_tools/devtools_auth_controller.dart';
+import 'package:flutter_starter_app/dev_tools/features/environment_switcher/environment_controller.dart';
+import 'package:flutter_starter_app/dev_tools/features/feature_flags/feature_flag_controller.dart';
+import 'package:flutter_starter_app/dev_tools/features/mocking/mock_controller.dart';
+import 'package:flutter_starter_app/dev_tools/features/network_throttling/network_throttling_controller.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../../../app.dart';
 import '../../../core/config/environment.dart';
@@ -9,13 +16,6 @@ import '../../../network/services/background_sync_service.dart';
 import '../../../network/utils/connectivity_service.dart';
 import '../../../network/utils/logger_services.dart';
 import '../../../network/managers/offline_sync_manager.dart';
-import 'dev_tools/features/auth_tools/devtools_auth_controller.dart';
-import 'dev_tools/features/feature_flags/feature_flag_controller.dart';
-import 'dev_tools/features/mocking/mock_controller.dart';
-import 'dev_tools/features/network_throttling/network_throttling_controller.dart';
-import 'dev_tools/dev_tools_constants.dart';
-import 'dev_tools/dev_tools_controller.dart';
-import 'dev_tools/features/environment_switcher/environment_controller.dart';
 
 Future<void> bootstrap({
   bool enableDevTools = DevToolsConstants.kIncludeDevTools,

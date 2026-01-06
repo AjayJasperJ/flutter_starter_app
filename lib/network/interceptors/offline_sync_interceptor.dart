@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import 'package:hive/hive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:synchronized/synchronized.dart';
+import '../../core/utils/notification_service.dart';
 import '../services/background_sync_service.dart';
 import '../utils/logger_services.dart';
 
@@ -70,6 +71,14 @@ class OfflineSyncInterceptor extends Interceptor {
     if (!exists) {
       debugPrint('[SYNC] Queuing offline processed request: ${options.path}');
       await _queueBox.add(task);
+
+      // [NEW] notify user immediately
+      await NotificationService().showNotification(
+        id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        title: 'Offline Sync',
+        body: 'Action saved offline. Will sync when online.',
+      );
+
       BackgroundSyncService().scheduleSyncTask();
     } else {
       debugPrint('[SYNC] Duplicate request ignored: ${options.path}');

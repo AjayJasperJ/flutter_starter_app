@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../api_services/api_error.dart';
 import '../api_services/state_response.dart';
+import '../utils/network_utils.dart';
 
 /// A "Lite" version of [UiBuilder] for regular (non-sliver) UI builds.
 /// Use this for components like Cards, Profile Headers, or single-child widgets
@@ -37,6 +38,12 @@ class UiBuilder<T> extends StatelessWidget {
       });
     }
 
+    if (response?.isFromCache == true) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        NetworkUtils.notifyCacheUse(context);
+      });
+    }
+
     T? castData(dynamic data) {
       if (data == null) {
         return null;
@@ -62,19 +69,6 @@ class UiBuilder<T> extends StatelessWidget {
         final content =
             onRefreshing?.call(castData(response?.data)) ?? onSuccess(castData(response?.data));
 
-        if (onRefreshing == null) {
-          return Stack(
-            children: [
-              content,
-              const Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: LinearProgressIndicator(minHeight: 2),
-              ),
-            ],
-          );
-        }
         return content;
       case States.failure:
         final error = ApiError(

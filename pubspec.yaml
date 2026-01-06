@@ -63,6 +63,7 @@ dependencies:
   pretty_dio_logger: ^1.4.0
   dio_cookie_manager: ^3.3.0
   cookie_jar: ^4.0.8
+  shared_preferences: ^2.5.4
 
 dev_dependencies:
   flutter_test:
@@ -74,6 +75,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  mocktail: ^1.0.4
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

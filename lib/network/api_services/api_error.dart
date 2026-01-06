@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
-import '../../../data/token_storage.dart';
-import '../../../models/api_response_model.dart';
+import 'package:flutter/foundation.dart';
+import '../../data/token_storage.dart';
+
+import '../../models/api_response_model.dart';
 
 enum ApiErrorType {
   network,
@@ -54,9 +56,11 @@ class ErrorHandler {
     String defaultMsg = "An error occurred";
     ApiErrorType type = ApiErrorType.unknown;
     int? code = error.response?.statusCode;
+
     if (error.response != null) {
       return parseResponse(error.response!);
     }
+
     switch (error.type) {
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.sendTimeout:
@@ -94,96 +98,71 @@ class ErrorHandler {
         }
         break;
     }
+
     return ApiError(message: defaultMsg, type: type, code: code);
   }
 
   static ApiError parseResponse(Response res) {
-    String? serverMessage;
     ApiResponseModel? errorModel;
     final data = res.data;
-
-    // 1. Try key-based extraction first (most robust)
     try {
-      if (data is Map<String, dynamic>) {
-        serverMessage = data['message'] ?? data['error'];
-      } else if (data is String) {
-        // Try parsing string as JSON
-        try {
-          final decoded = jsonDecode(data);
-          if (decoded is Map<String, dynamic>) {
-            serverMessage = decoded['message'] ?? decoded['error'];
-          }
-        } catch (_) {
-          // If not JSON, use the string itself if it's short enough to be a message
-          if (data.length < 200) serverMessage = data;
-        }
+      if (data != null && data.toString().trim().isNotEmpty) {
+        final Map<String, dynamic> decodedData = data is String
+            ? jsonDecode(data)
+            : data as Map<String, dynamic>;
+        errorModel = ApiResponseModel.fromJson(decodedData);
       }
-    } catch (_) {}
-
-    // 2. Try strict Model parsing (for structured errors)
-    if (res.statusCode != 500) {
-      try {
-        if (data != null) {
-          final Map<String, dynamic> decodedData = data is String
-              ? jsonDecode(data)
-              : data as Map<String, dynamic>;
-          errorModel = ApiResponseModel.fromJson(decodedData);
-          // If model has a message, it takes precedence
-          if (errorModel.message.isNotEmpty) {
-            serverMessage = errorModel.message;
-          }
-        }
-      } catch (_) {}
+    } catch (e) {
+      if (kDebugMode) print("[ErrorHandler] Error parsing error message: $e");
     }
 
     _authGuard(res.statusCode);
 
+    String defaultMsg;
     ApiErrorType type;
-    String statusMessage;
 
     switch (res.statusCode) {
       case 400:
-        statusMessage = 'Bad Request';
+        defaultMsg =
+            'Bad Request – The server could not understand your request.';
         type = ApiErrorType.badRequest;
         break;
       case 401:
-        statusMessage = 'Unauthorized';
+        defaultMsg = 'Unauthorized – Please log in again.';
         type = ApiErrorType.unauthorized;
         break;
       case 403:
-        statusMessage = 'Forbidden';
+        defaultMsg = 'Forbidden – You do not have permission for this action.';
         type = ApiErrorType.forbidden;
         break;
       case 404:
-        statusMessage = 'Not Found';
+        defaultMsg = 'Not Found – The requested resource was not found.';
         type = ApiErrorType.notFound;
         break;
       case 408:
-        statusMessage = 'Request Timeout';
+        defaultMsg = 'Request Timeout – The server took too long to respond.';
         type = ApiErrorType.timeout;
         break;
       case 429:
-        statusMessage = 'Too Many Requests';
+        defaultMsg = 'Too Many Requests – You’re sending requests too quickly.';
         type = ApiErrorType.rateLimit;
         break;
       case 500:
-        statusMessage = 'Internal Server Error';
+        defaultMsg =
+            'Internal Server Error – Something went wrong on the server.';
         type = ApiErrorType.server;
         break;
       case 503:
-        statusMessage = 'Service Unavailable';
+        defaultMsg = 'Service Unavailable – The server is temporarily offline.';
         type = ApiErrorType.serverUnavailable;
         break;
       default:
-        statusMessage = 'Unexpected Error (${res.statusCode})';
-        type = (res.statusCode != null && res.statusCode! >= 500)
-            ? ApiErrorType.server
-            : ApiErrorType.unknown;
+        defaultMsg = 'Unexpected HTTP error (${res.statusCode}).';
+        type = ApiErrorType.unknown;
     }
-
-    // FINAL DECISION: Use server message if available, else usage status message
+    final message = errorModel?.message ?? defaultMsg;
     return ApiError(
-      message: serverMessage?.toString() ?? statusMessage,
+      message: message,
       type: type,
       code: res.statusCode,
       response: errorModel,
@@ -195,4 +174,6 @@ class ErrorHandler {
       await TokenStorage.deleteToken();
     }
   }
+
+  static String exceptionMessage = "Exception Found : Contact Developer";
 }

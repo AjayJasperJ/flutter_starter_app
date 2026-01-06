@@ -64,42 +64,56 @@ class ScrollHelper {
   }
 
   // Smart scroll for chat: handles images loading, new messages, etc.
+  // Smart scroll: Re-checks maxScrollExtent to handle lazy-loaded content (e.g. images)
+  // Added MAX RETRIES to prevent infinite loops.
   static Future<void> smartScrollToBottom({
     required ScrollController controller,
     Duration duration = const Duration(milliseconds: 250),
     Curve curve = Curves.easeOut,
   }) async {
     if (!controller.hasClients) return;
-    await Future.delayed(const Duration(milliseconds: 100));
-    var previousExtent = controller.position.maxScrollExtent;
-    while (true) {
+
+    int retries = 0;
+    const maxRetries = 5; // Safety limit
+
+    while (retries < maxRetries) {
+      if (!controller.hasClients) break;
+
       final currentExtent = controller.position.maxScrollExtent;
-      if (currentExtent <= previousExtent + 1.0) break;
+      final position = controller.position.pixels;
+
+      // If we are already at bottom (within tolerance), stop.
+      if (position >= currentExtent - 1.0) break;
+
       await controller.animateTo(
         currentExtent,
         duration: duration,
         curve: curve,
       );
-      previousExtent = currentExtent;
+
+      // Wait for layout to possibly settle (e.g. images expanding)
       await Future.delayed(const Duration(milliseconds: 150));
+      retries++;
     }
   }
 
   static Future<void> waitForKeyboardOpen(BuildContext context) async {
-    if (context.mounted) {
-      final value = MediaQuery.of(context).viewInsets.bottom == 0;
-      while (value) {
-        await Future.delayed(const Duration(milliseconds: 50));
-      }
+    int attempts = 0;
+    // Poll for 2 seconds max
+    while (context.mounted && attempts < 20) {
+      if (View.of(context).viewInsets.bottom > 0) return; // Keyboard is Open!
+      await Future.delayed(const Duration(milliseconds: 100));
+      attempts++;
     }
   }
 
   static Future<void> waitForKeyboardClose(BuildContext context) async {
-    if (context.mounted) {
-      final value = MediaQuery.of(context).viewInsets.bottom > 0;
-      while (value) {
-        await Future.delayed(const Duration(milliseconds: 50));
-      }
+    int attempts = 0;
+    while (context.mounted && attempts < 20) {
+      if (View.of(context).viewInsets.bottom == 0)
+        return; // Keyboard is Closed!
+      await Future.delayed(const Duration(milliseconds: 100));
+      attempts++;
     }
   }
 

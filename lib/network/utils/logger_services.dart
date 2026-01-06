@@ -60,18 +60,10 @@ class LoggerService {
     required String action,
     Map<String, dynamic>? details,
   }) async {
-    await log(
-      level: LogLevel.info,
-      category: category,
-      message: action,
-      details: details,
-    );
+    await log(level: LogLevel.info, category: category, message: action, details: details);
   }
 
-  static Future<void> logUi(
-    String action, {
-    Map<String, dynamic>? details,
-  }) async {
+  static Future<void> logUi(String action, {Map<String, dynamic>? details}) async {
     await logEvent(category: 'ui', action: action, details: details);
   }
 
@@ -98,16 +90,10 @@ class LoggerService {
 
       if (await _logFile!.length() > _maxLogSize) {
         await _logFile!.writeAsString('', mode: FileMode.write);
-        if (kDebugMode) {
-          debugPrint("[LoggerService] Log file cleared (size > 5MB)");
-        }
+        if (kDebugMode) debugPrint("[LoggerService] Log file cleared (size > 5MB)");
       }
 
-      await _logFile!.writeAsString(
-        '$line\n',
-        mode: FileMode.append,
-        flush: true,
-      );
+      await _logFile!.writeAsString('$line\n', mode: FileMode.append, flush: true);
       _logStream.add(line);
     });
   }
@@ -134,21 +120,13 @@ class LoggerService {
   ) {
     if (!kDebugMode) return;
 
-    final color = level == LogLevel.error
-        ? '\x1B[31m'
-        : '\x1B[32m'; // Red or Green
+    final color = level == LogLevel.error ? '\x1B[31m' : '\x1B[32m'; // Red or Green
     final reset = '\x1B[0m';
-    final timestamp = DateTime.now()
-        .toIso8601String()
-        .split('T')[1]
-        .substring(0, 8);
+    final timestamp = DateTime.now().toIso8601String().split('T')[1].substring(0, 8);
 
     debugPrint('$color[$timestamp][$category] $message$reset');
     if (details != null && details.isNotEmpty) {
-      final prettyJson = const JsonEncoder.withIndent(
-        '  ',
-        _toEncodable,
-      ).convert(details);
+      final prettyJson = const JsonEncoder.withIndent('  ', _toEncodable).convert(details);
       debugPrint('$color$prettyJson$reset');
     }
   }

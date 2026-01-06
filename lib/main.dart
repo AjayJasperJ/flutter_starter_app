@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/config/provider_routes.dart';
 import '../../../app.dart';
-import '../../../bootstrap.dart';
+import 'bootstrap.dart';
 
 void main() async {
   await bootstrap();

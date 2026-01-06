@@ -7,6 +7,7 @@ class StateResponse<T> {
   final ApiErrorType? errorType;
   final int? code;
   final bool isRefreshing;
+  final bool isFromCache;
 
   const StateResponse({
     required this.state,
@@ -15,30 +16,43 @@ class StateResponse<T> {
     this.errorType,
     this.code,
     this.isRefreshing = false,
+    this.isFromCache = false,
   });
   factory StateResponse.idle() => StateResponse(state: States.idle, message: 'Page idle');
 
-  factory StateResponse.success(T data, {String? message}) => StateResponse(
-    state: States.success,
-    message: message ?? "Success",
-    data: data,
-    isRefreshing: false,
-  );
+  factory StateResponse.success(T data, {String? message, bool isFromCache = false}) =>
+      StateResponse(
+        state: States.success,
+        message: message ?? "Success",
+        data: data,
+        isRefreshing: false,
+        isFromCache: isFromCache,
+      );
 
-  factory StateResponse.refreshing(T data, {String? message}) => StateResponse(
-    state: States.refreshing,
-    message: message ?? "Refreshing...",
-    data: data,
-    isRefreshing: true,
-  );
+  factory StateResponse.refreshing(T data, {String? message, bool isFromCache = false}) =>
+      StateResponse(
+        state: States.refreshing,
+        message: message ?? "Refreshing...",
+        data: data,
+        isRefreshing: true,
+        isFromCache: isFromCache,
+      );
 
-  factory StateResponse.failure(ApiError error) => StateResponse(
-    state: States.failure,
-    message: error.message,
-    errorType: error.type,
-    code: error.code,
-    data: error.response as T?,
-  );
+  factory StateResponse.failure(ApiError error) {
+    T? data;
+    try {
+      if (error.response is T) {
+        data = error.response as T;
+      }
+    } catch (_) {}
+    return StateResponse(
+      state: States.failure,
+      message: error.message,
+      errorType: error.type,
+      code: error.code,
+      data: data,
+    );
+  }
 
   factory StateResponse.exception(String message, {T? data}) =>
       StateResponse(state: States.exception, message: message, data: data);

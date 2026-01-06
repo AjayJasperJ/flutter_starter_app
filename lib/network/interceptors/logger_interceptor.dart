@@ -11,6 +11,9 @@ class LoggerInterceptor extends Interceptor {
 
   @override
   void onResponse(Response response, ResponseInterceptorHandler handler) async {
+    if (response.requestOptions.extra['disableLogger'] == true) {
+      return handler.next(response);
+    }
     await LoggerService.logApi(
       '[${response.requestOptions.method}] ${response.requestOptions.path}',
       success: true,
@@ -22,11 +25,19 @@ class LoggerInterceptor extends Interceptor {
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
+    if (err.requestOptions.extra['disableLogger'] == true) {
+      return handler.next(err);
+    }
+    // For cancellations, prefer the specific reason (if any) over the generic message
+    final errorMessage = (err.type == DioExceptionType.cancel && err.error != null)
+        ? err.error.toString()
+        : err.message;
+
     await LoggerService.logApi(
       '[${err.requestOptions.method}] ${err.requestOptions.path}',
       success: false,
       statusCode: err.response?.statusCode,
-      response: err.message, // Capture error message
+      response: errorMessage,
     );
     super.onError(err, handler);
   }

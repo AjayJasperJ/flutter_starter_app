@@ -5,8 +5,9 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:http_parser/http_parser.dart';
 import 'dart:async';
 import 'dart:convert';
-import '../../../core/config/environment.dart';
-import '../../../data/token_storage.dart';
+import '../../data/token_storage.dart';
+import '../../core/config/environment.dart';
+import '../network_constants.dart'; // [NEW] Import NetworkConstants
 import 'api_error.dart';
 import 'api_response.dart';
 import '../interceptors/auth_interceptor.dart';
@@ -18,33 +19,21 @@ import '../interceptors/mock_interceptor.dart';
 import '../interceptors/throttling_interceptor.dart';
 import '../../dev_tools/dev_tools_constants.dart';
 import '../utils/connectivity_service.dart';
-import '../network_constants.dart';
-import '../interceptors/circuit_breaker_interceptor.dart';
+import '../utils/network_utils.dart'; // [NEW] Import NetworkUtils
 
 class ApiClient {
   late final Dio _dio;
-
-  // Global broadcast for successful re-fetches
   static final StreamController<String> _refreshController =
       StreamController<String>.broadcast();
   static Stream<String> get refreshStream => _refreshController.stream;
-
-  // Track paths that were served from cache and need background refresh upon reconnection
-  Box? _refreshBox;
-
-  // Track keys that have been successfully fetched from network during this app session
+  // Box? _refreshBox; // [REMOVED] Persistent refresh queue
+  static final Set<String> _recoveryQueue =
+      {}; // [NEW] RAM-based recovery queue
   static final Set<String> _sessionFetchedKeys = {};
-
-  // Track in-flight requests for deduplication
-  final Map<String, Future<ApiResult<Response>>> _inFlightRequests = {};
-
-  static final ApiClient _instance = ApiClient._internal();
-
-  factory ApiClient() {
-    return _instance;
-  }
-
-  ApiClient._internal({String? baseUrl, Dio? dioOverride, Duration? timeout}) {
+  static bool _isRecovering = false; // [NEW] Lock for auto-recovery
+  final Map<String, (Future<ApiResult<Response>>, CancelToken?)>
+  _inFlightRequests = {};
+  ApiClient({String? baseUrl, Dio? dioOverride, Duration? timeout}) {
     final effectiveBaseUrl = _normalizeBase(baseUrl ?? Environment.apiUrl);
     debugPrint(
       '[ApiClient] Initializing with baseUrl: "$effectiveBaseUrl" (Source: ${baseUrl ?? 'Environment.apiUrl'})',
@@ -55,24 +44,26 @@ class ApiClient {
         Dio(
           BaseOptions(
             baseUrl: effectiveBaseUrl,
-            connectTimeout: timeout ?? NetworkConstants.connectTimeout,
-            receiveTimeout: timeout ?? NetworkConstants.receiveTimeout,
-            sendTimeout: timeout ?? NetworkConstants.sendTimeout,
-            headers: NetworkConstants.defaultHeaders,
+            connectTimeout:
+                timeout ??
+                const Duration(seconds: NetworkConstants.connectTimeoutSeconds),
+            receiveTimeout:
+                timeout ??
+                const Duration(seconds: NetworkConstants.receiveTimeoutSeconds),
+            sendTimeout:
+                timeout ??
+                const Duration(seconds: NetworkConstants.sendTimeoutSeconds),
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+            },
           ),
         );
-
     Box? cacheBox;
     Box? queueBox;
-    if (Hive.isBoxOpen(NetworkConstants.cacheBox)) {
-      cacheBox = Hive.box(NetworkConstants.cacheBox);
-    }
-    if (Hive.isBoxOpen(NetworkConstants.offlineQueueBox)) {
-      queueBox = Hive.box(NetworkConstants.offlineQueueBox);
-    }
-    if (Hive.isBoxOpen(NetworkConstants.refreshQueueBox)) {
-      _refreshBox = Hive.box(NetworkConstants.refreshQueueBox);
-    }
+    if (Hive.isBoxOpen('api_cache')) cacheBox = Hive.box('api_cache');
+    if (Hive.isBoxOpen('offline_queue')) queueBox = Hive.box('offline_queue');
+    if (Hive.isBoxOpen('offline_queue')) queueBox = Hive.box('offline_queue');
 
     if (cacheBox != null) {
       final cacheInterceptor = CacheInterceptor(cacheBox);
@@ -89,7 +80,9 @@ class ApiClient {
         dio: _dio,
         logPrint: debugPrint,
         retries: NetworkConstants.maxRetries,
-        retryDelays: NetworkConstants.retryDelays,
+        retryDelays: NetworkConstants.retryDelaysSeconds
+            .map((s) => Duration(seconds: s))
+            .toList(),
         retryEvaluator: (error, attempt) {
           if (error.type == DioExceptionType.connectionError) {
             return false;
@@ -99,6 +92,7 @@ class ApiClient {
             DioExceptionType.connectionTimeout,
             DioExceptionType.sendTimeout,
             DioExceptionType.receiveTimeout,
+            DioExceptionType.unknown,
           };
           return retryableStatuses.contains(error.response?.statusCode) ||
               retryableTypes.contains(error.type);
@@ -106,49 +100,54 @@ class ApiClient {
       ),
     );
     _dio.interceptors.add(PerformanceInterceptor());
-    _dio.interceptors.add(CircuitBreakerInterceptor());
     if (DevToolsConstants.kIncludeDevTools) {
       _dio.interceptors.add(ThrottlingInterceptor());
-      _dio.interceptors.add(
-        MockInterceptor(),
-      ); // Mocking should have high precedence
+      _dio.interceptors.add(MockInterceptor());
     }
     _dio.interceptors.add(LoggerInterceptor());
     _dio.interceptors.add(AuthInterceptor(dio: _dio));
-
     ConnectivityService().connectionChange.listen((hasConnection) async {
       if (hasConnection) {
         await Future.delayed(const Duration(seconds: 2));
         await syncOfflineData();
+        if (_recoveryQueue.isNotEmpty && !_isRecovering) {
+          _isRecovering = true;
+          debugPrint('[ApiClient] Starting RAM-Based Auto-Recovery Sync...');
+          // Create a copy to iterate safely
+          final keysToRefresh = _recoveryQueue.toList();
 
-        // 3. Automatically refresh cached GET paths from persistent queue
-        if (_refreshBox != null && _refreshBox!.isNotEmpty) {
-          final pathsToRefresh = _refreshBox!.values.cast<String>().toList();
-          for (final path in pathsToRefresh) {
-            // Sequential batching with delay to prevent thundering herd
+          for (final key in keysToRefresh) {
+            if (_sessionFetchedKeys.contains(key)) {
+              debugPrint(
+                '[ApiClient] Skipping active screen (already fetched): $key',
+              );
+              _recoveryQueue.remove(key); // Cleanup
+              continue;
+            }
+            final path = key;
+            debugPrint('[ApiClient] Auto-Recovering (RAM): $path');
+
             await Future.delayed(const Duration(milliseconds: 300));
-            // staleWhileRevalidate: false here because we ARE the revalidator
-            await get(path, withAuth: true, staleWhileRevalidate: false);
+            final result = await get(
+              path,
+              withAuth: true,
+              staleWhileRevalidate: false,
+              sessionStale: false,
+            );
 
-            // Remove from queue after successful (or attempted) refresh
-            await _refreshBox!.deleteAt(0);
+            if (result.isSuccess) {
+              _refreshController.add(path);
+            }
           }
+          debugPrint('[ApiClient] RAM Auto-Recovery Run Complete.');
+          _isRecovering = false;
         }
       }
     });
 
-    // 4. Initial check: If app starts online, refresh pending paths
     Future.microtask(() async {
       if (ConnectivityService().hasConnection) {
         await syncOfflineData();
-        if (_refreshBox != null && _refreshBox!.isNotEmpty) {
-          final pathsToRefresh = _refreshBox!.values.cast<String>().toList();
-          for (final path in pathsToRefresh) {
-            await Future.delayed(const Duration(milliseconds: 300));
-            await get(path, withAuth: true, staleWhileRevalidate: false);
-            if (_refreshBox!.isNotEmpty) await _refreshBox!.deleteAt(0);
-          }
-        }
       }
     });
   }
@@ -157,13 +156,9 @@ class ApiClient {
     _dio.interceptors.add(interceptor);
   }
 
-  /// Manually reset the session cache for a specific path or all paths.
-  /// If [path] is provided, only that path is removed from the session cache.
-  /// If [path] is null, the entire session cache is cleared.
   static void resetSessionStale({String? path}) {
     if (path != null) {
       debugPrint('[NETWORK] Resetting session stale for path: $path');
-      // Remove all keys that match the pattern "GET:path:..."
       _sessionFetchedKeys.removeWhere((key) => key.startsWith('GET:$path:'));
     } else {
       debugPrint('[NETWORK] Resetting all session stale keys');
@@ -178,6 +173,8 @@ class ApiClient {
     Map<String, dynamic>? query,
     Map<String, String>? headers,
     bool withAuth = true,
+    bool disableCache = false,
+    bool disableLogger = false,
     CancelToken? cancelToken,
   }) async {
     try {
@@ -187,7 +184,14 @@ class ApiClient {
         onReceiveProgress: onReceiveProgress,
         queryParameters: query,
         cancelToken: cancelToken,
-        options: Options(headers: headers, extra: {'withAuth': withAuth}),
+        options: Options(
+          headers: headers,
+          extra: {
+            'withAuth': withAuth,
+            'disableCache': disableCache,
+            'disableLogger': disableLogger,
+          },
+        ),
       );
       return ApiResult.success(response);
     } on DioException catch (e) {
@@ -204,21 +208,47 @@ class ApiClient {
     Map<String, dynamic>? query,
     Map<String, String>? headers,
     bool withAuth = true,
-    bool staleWhileRevalidate = true,
-    bool sessionStale = true,
+    bool staleWhileRevalidate = false,
+    bool sessionStale = false,
+    bool singleFetch = false,
+    bool resetSingleFetch = false,
     bool resetCurrentStale = false,
+    bool disableCache = false,
+    bool disableLogger = false,
+    Duration? cacheStorageDuration,
     CancelToken? cancelToken,
     ProgressCallback? onReceiveProgress,
   }) async {
-    final requestKey = 'GET:$path:${query?.toString()}';
-
-    // 1. Request Deduplication: Return existing future if same request is in-flight
-    if (_inFlightRequests.containsKey(requestKey)) {
-      debugPrint('[NETWORK] Deduplicating request: $path');
-      return _inFlightRequests[requestKey]!;
+    String? queryString;
+    if (query != null && query.isNotEmpty) {
+      final sortedKeys = query.keys.toList()..sort();
+      queryString = sortedKeys.map((k) => '$k=${query[k]}').join('&');
     }
+    final requestKey = 'GET:$path${queryString != null ? '?$queryString' : ''}';
+    if (_inFlightRequests.containsKey(requestKey)) {
+      final entry = _inFlightRequests[requestKey]!;
+      final existingCancelToken = entry.$2;
 
-    // 2. Reset Current Stale: Force invalidation for this specific request key
+      // Smart Latest Wins: If new request has a DIFFERENT token, supersede the old one.
+      // This ensures fresh interactions (which typically use a new CancelToken) don't
+      // inherit a "dying" or "stale" future from a previous call.
+      if (existingCancelToken != cancelToken) {
+        debugPrint(
+          '[NETWORK] Superseding in-flight request: $path (New Token Provided)',
+        );
+        existingCancelToken?.cancel("Superseded by newer request");
+        _inFlightRequests.remove(requestKey);
+      } else if (existingCancelToken == null ||
+          !existingCancelToken.isCancelled) {
+        debugPrint('[NETWORK] Deduplicating request: $path');
+        return entry.$1;
+      } else {
+        debugPrint(
+          '[NETWORK] Skipping deduplication for cancelled request: $path',
+        );
+        _inFlightRequests.remove(requestKey);
+      }
+    }
     if (resetCurrentStale) {
       debugPrint(
         '[NETWORK] ResetCurrentStale: Invalidating session cache for $path',
@@ -226,16 +256,31 @@ class ApiClient {
       _sessionFetchedKeys.remove(requestKey);
     }
 
-    // 3. Session-Based Stale Handling
-    // If we've already fetched this in the current session, return from cache immediately
-    // and skip the network request to avoid unwanted traffic.
-    if (sessionStale && _sessionFetchedKeys.contains(requestKey)) {
-      final cachedResponse = await _checkCache(path, query: query);
-      if (cachedResponse != null) {
-        debugPrint(
-          '[NETWORK] SessionStale: Returning cached data for $path (Session Active)',
-        );
-        return ApiResult.success(cachedResponse);
+    // 1. Disable Cache Check
+    if (!disableCache) {
+      // 2. Session Stale (Memory)
+      if (sessionStale && _sessionFetchedKeys.contains(requestKey)) {
+        final cachedResponse = await _checkCache(path, query: query);
+        if (cachedResponse != null) {
+          debugPrint(
+            '[NETWORK] SessionStale: Returning cached data for $path (Session Active)',
+          );
+          // Explicitly set isFromCache to false for session hits to avoid toast
+          cachedResponse.extra['isFromCache'] = false;
+          return ApiResult.success(cachedResponse);
+        }
+      }
+
+      // 3. Single Fetch (Persistent)
+      if (singleFetch && !resetSingleFetch) {
+        final cachedResponse = await _checkCache(path, query: query);
+        if (cachedResponse != null) {
+          debugPrint(
+            '[NETWORK] SingleFetch: Returning persistent cache for $path',
+          );
+          // Persistent hit -> isFromCache = true
+          return ApiResult.success(cachedResponse);
+        }
       }
     }
 
@@ -244,20 +289,19 @@ class ApiClient {
       query: query,
       headers: headers,
       withAuth: withAuth,
+      disableCache: disableCache,
+      disableLogger: disableLogger,
+      cacheStorageDuration: cacheStorageDuration,
       cancelToken: cancelToken,
       onReceiveProgress: onReceiveProgress,
     );
 
-    _inFlightRequests[requestKey] = future;
+    _inFlightRequests[requestKey] = (future, cancelToken);
 
     try {
-      // 4. Classic Stale-While-Revalidate: If we have cache, return it immediately
-      // and let the network future complete in background.
-      // We skip this if we are in "First Load" mode of sessionStale (not in _sessionFetchedKeys)
-      // because we want the first load to be fresh.
-      final shouldServeSWR =
-          staleWhileRevalidate &&
-          (!sessionStale || _sessionFetchedKeys.contains(requestKey));
+      // 4. SWR (Persistent)
+      // Only run SWR if cache is NOT disabled AND SWR is enabled
+      final shouldServeSWR = !disableCache && staleWhileRevalidate;
 
       if (shouldServeSWR) {
         final cachedResponse = await _checkCache(path, query: query);
@@ -269,7 +313,10 @@ class ApiClient {
             if (result.isSuccess) {
               _sessionFetchedKeys.add(requestKey);
             }
-            _inFlightRequests.remove(requestKey);
+            // Only remove if it's the SAME future
+            if (_inFlightRequests[requestKey]?.$1 == future) {
+              _inFlightRequests.remove(requestKey);
+            }
           });
 
           return ApiResult.success(cachedResponse);
@@ -279,15 +326,24 @@ class ApiClient {
       final result = await future;
 
       // If network request was successful, mark this key as "fetched in session"
+      // BUT only if it wasn't from cache (Offline Mode) to allow Auto-Recovery to run later.
       if (result.isSuccess) {
-        _sessionFetchedKeys.add(requestKey);
+        final response =
+            (result as dynamic).data as Response; // Dynamic cast to access data
+        final isFromCache = response.extra['isFromCache'] ?? false;
+
+        if (!isFromCache) {
+          _sessionFetchedKeys.add(requestKey);
+        }
       }
 
       return result;
     } finally {
       // Clean up in-flight mapping if we didn't return early
       if (_inFlightRequests.containsKey(requestKey)) {
-        _inFlightRequests.remove(requestKey);
+        if (_inFlightRequests[requestKey]?.$1 == future) {
+          _inFlightRequests.remove(requestKey);
+        }
       }
     }
   }
@@ -296,9 +352,7 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? query,
   }) async {
-    final cacheBox = Hive.isBoxOpen(NetworkConstants.cacheBox)
-        ? Hive.box(NetworkConstants.cacheBox)
-        : null;
+    final cacheBox = Hive.isBoxOpen('api_cache') ? Hive.box('api_cache') : null;
     if (cacheBox == null) return null;
 
     // Build the same key as CacheInterceptor (Full URI)
@@ -311,10 +365,13 @@ class ApiClient {
 
     final cachedEntry = cacheBox.get(key);
     if (cachedEntry != null && cachedEntry is Map) {
+      // Perform background parsing for consistency
       final data = cachedEntry['data'];
-      final decodedData = data is String
-          ? await compute(_parseJson, data)
-          : data;
+      // Use NetworkUtils to cast properly before parsing or returning
+      final castData = NetworkUtils.castToMapStringDynamic(data);
+      final decodedData = castData is String
+          ? await compute(_parseJson, castData)
+          : castData;
 
       return Response(
         requestOptions: options,
@@ -331,6 +388,9 @@ class ApiClient {
     Map<String, dynamic>? query,
     Map<String, String>? headers,
     bool withAuth = true,
+    bool disableCache = false,
+    bool disableLogger = false,
+    Duration? cacheStorageDuration,
     CancelToken? cancelToken,
     ProgressCallback? onReceiveProgress,
   }) async {
@@ -342,12 +402,26 @@ class ApiClient {
         onReceiveProgress: onReceiveProgress,
         options: Options(
           headers: headers,
-          extra: {'withAuth': withAuth},
+          extra: {
+            'withAuth': withAuth,
+            'disableCache': disableCache,
+            'disableLogger': disableLogger,
+            if (cacheStorageDuration != null)
+              'cacheStorageDuration': cacheStorageDuration,
+          },
           responseType: ResponseType.plain,
         ),
       );
 
       final isFromCache = response.extra['isFromCache'] ?? false;
+
+      // Reconstruct requestKey for consistency (identical to get() logic)
+      // [REMOVED] queryString construction (Unused)
+      // [REMOVED] requestKey (Unused)
+
+      // [NEW] Simplified Recovery Key: Just the path (e.g. /teacher-timesheet)
+      // This allows Providers to listen for general updates to this endpoint
+      final recoveryKey = path;
 
       // 2. Background JSON Parsing (Isolates)
       if (response.data is String && (response.data as String).isNotEmpty) {
@@ -365,24 +439,24 @@ class ApiClient {
       }
 
       if (isFromCache) {
-        // Persistent Registry: Record that this path needs a refresh when online
-        if (_refreshBox != null && !ConnectivityService().hasConnection) {
-          if (!_refreshBox!.values.contains(path)) {
-            _refreshBox!.add(path);
+        // [MODIFIED] RAM Registry: Record that this REQUEST needs a refresh when online
+        if (!ConnectivityService().hasConnection) {
+          if (!_recoveryQueue.contains(recoveryKey)) {
+            debugPrint(
+              '[ApiClient] Adding to RAM Recovery Queue: $recoveryKey',
+            );
+            _recoveryQueue.add(recoveryKey);
           }
         }
       } else {
-        // If it was previously in the refresh queue but now came from network,
-        // remove it and broadcast fresh data
-        if (_refreshBox != null) {
-          final keysToRemove = _refreshBox!.keys
-              .where((k) => _refreshBox!.get(k) == path)
-              .toList();
-          for (final k in keysToRemove) {
-            _refreshBox!.delete(k);
-          }
+        // [MODIFIED] Success from Network: Remove from recovery queue
+        if (_recoveryQueue.contains(recoveryKey)) {
+          debugPrint(
+            '[ApiClient] Removing from RAM Recovery Queue (Success): $recoveryKey',
+          );
+          _recoveryQueue.remove(recoveryKey);
         }
-        _refreshController.add(path);
+        // [REMOVED] _refreshController.add(path); - Was causing infinite loop
       }
 
       return ApiResult.success(response);
@@ -402,6 +476,8 @@ class ApiClient {
     Map<String, String>? headers,
     bool withAuth = true,
     bool isOfflineSync = true,
+    bool disableCache = false,
+    bool disableLogger = false,
     CancelToken? cancelToken,
     ProgressCallback? onSendProgress,
     ProgressCallback? onReceiveProgress,
@@ -416,7 +492,12 @@ class ApiClient {
         onReceiveProgress: onReceiveProgress,
         options: Options(
           headers: headers,
-          extra: {'withAuth': withAuth, 'isOfflineSync': isOfflineSync},
+          extra: {
+            'withAuth': withAuth,
+            'isOfflineSync': isOfflineSync,
+            'disableCache': disableCache,
+            'disableLogger': disableLogger,
+          },
           responseType: ResponseType.plain,
         ),
       );
@@ -452,6 +533,8 @@ class ApiClient {
     Map<String, String>? headers,
     bool withAuth = true,
     bool isOfflineSync = true,
+    bool disableCache = false,
+    bool disableLogger = false,
     CancelToken? cancelToken,
     ProgressCallback? onSendProgress,
     ProgressCallback? onReceiveProgress,
@@ -466,7 +549,12 @@ class ApiClient {
         onReceiveProgress: onReceiveProgress,
         options: Options(
           headers: headers,
-          extra: {'withAuth': withAuth, 'isOfflineSync': isOfflineSync},
+          extra: {
+            'withAuth': withAuth,
+            'isOfflineSync': isOfflineSync,
+            'disableCache': disableCache,
+            'disableLogger': disableLogger,
+          },
           responseType: ResponseType.plain,
         ),
       );
@@ -502,6 +590,8 @@ class ApiClient {
     Map<String, String>? headers,
     bool withAuth = true,
     bool isOfflineSync = true,
+    bool disableCache = false,
+    bool disableLogger = false,
     CancelToken? cancelToken,
   }) async {
     try {
@@ -513,7 +603,12 @@ class ApiClient {
         options: Options(
           contentType: Headers.formUrlEncodedContentType,
           headers: headers,
-          extra: {'withAuth': withAuth, 'isOfflineSync': isOfflineSync},
+          extra: {
+            'withAuth': withAuth,
+            'isOfflineSync': isOfflineSync,
+            'disableCache': disableCache,
+            'disableLogger': disableLogger,
+          },
           responseType: ResponseType.plain,
         ),
       );
@@ -549,13 +644,15 @@ class ApiClient {
     List<MultipartBytesFile>? files,
     Map<String, String>? headers,
     bool withAuth = true,
+    bool disableCache = false,
+    bool disableLogger = false,
     CancelToken? cancelToken,
     ProgressCallback? onSendProgress,
     ProgressCallback? onReceiveProgress,
   }) async {
     try {
       final formData = FormData();
-
+      // ... (existing formData logic)
       if (fields != null) {
         fields.forEach((key, value) {
           formData.fields.add(MapEntry(key, value));
@@ -593,7 +690,11 @@ class ApiClient {
         onReceiveProgress: onReceiveProgress,
         options: Options(
           headers: headers,
-          extra: {'withAuth': withAuth},
+          extra: {
+            'withAuth': withAuth,
+            'disableCache': disableCache,
+            'disableLogger': disableLogger,
+          },
           responseType: ResponseType.plain,
         ),
       );

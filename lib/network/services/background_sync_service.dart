@@ -3,9 +3,9 @@ import '../../core/config/environment.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../dev_tools/features/environment_switcher/environment_controller.dart';
-import '../../core/utils/notification_service.dart';
+import '../../services/notification_service.dart';
 import '../api_services/api_client.dart';
 import '../utils/logger_services.dart';
 
@@ -15,39 +15,35 @@ const String kPeriodicSyncReminderTask = 'com.myapp.periodicSyncReminder';
 @pragma('vm:entry-point')
 void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
+    // 1. Ensure Flutter is ready for background work
     WidgetsFlutterBinding.ensureInitialized();
     debugPrint('[BACKGROUND SYNC-v2] Isolate initialized. Task: $task');
+
     try {
       await Hive.initFlutter();
       if (!Hive.isBoxOpen('api_cache')) await Hive.openBox('api_cache');
       if (!Hive.isBoxOpen('offline_queue')) await Hive.openBox('offline_queue');
+
+      // Initialize logging and notifications in background isolate
       await LoggerService.init();
       await NotificationService().init(isBackground: true);
       try {
         await Environment.load();
       } catch (e) {
-        debugPrint(
-          "Env load failed (expected in production if using build args): $e",
-        );
+        debugPrint("Env load failed (expected in production if using build args): $e");
       }
 
-      if (!Hive.isBoxOpen('settings')) await Hive.openBox('settings');
-      final settingsBox = Hive.box('settings');
-      final bool isAppInForeground = settingsBox.get(
-        'isAppInForeground',
-        defaultValue: false,
-      );
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload(); // Ensure we have latest data
+      final bool isAppInForeground = prefs.getBool('isAppInForeground') ?? false;
 
-      debugPrint(
-        '[BACKGROUND SYNC] Task $task starting. isInForeground: $isAppInForeground',
-      );
+      debugPrint('[BACKGROUND SYNC] Task $task starting. isInForeground: $isAppInForeground');
 
       if (task == kBackgroundSyncTask) {
         await LoggerService.log(
           level: LogLevel.info,
           category: 'background_sync',
-          message:
-              'Starting sync task: $task | isInForeground: $isAppInForeground',
+          message: 'Starting sync task: $task | isInForeground: $isAppInForeground',
         );
 
         final queueBox = Hive.box('offline_queue');
@@ -85,8 +81,7 @@ void callbackDispatcher() {
             await LoggerService.log(
               level: LogLevel.info,
               category: 'background_sync',
-              message:
-                  'Periodic reminder triggered: ${queueBox.length} items pending offline.',
+              message: 'Periodic reminder triggered: ${queueBox.length} items pending offline.',
             );
             await NotificationService().showNotification(
               id: 101,
@@ -113,8 +108,7 @@ void callbackDispatcher() {
 }
 
 class BackgroundSyncService {
-  static final BackgroundSyncService _instance =
-      BackgroundSyncService._internal();
+  static final BackgroundSyncService _instance = BackgroundSyncService._internal();
   factory BackgroundSyncService() => _instance;
 
   BackgroundSyncService._internal();
@@ -134,25 +128,18 @@ class BackgroundSyncService {
         requiresBatteryNotLow: false,
       ),
     );
-    debugPrint(
-      '[BACKGROUND SYNC] Initialized (15min periodicity - replace policy)',
-    );
+    debugPrint('[BACKGROUND SYNC] Initialized (15min periodicity - replace policy)');
   }
 
   void scheduleSyncTask() {
     Workmanager().registerOneOffTask(
       'bg_sync_unique_work',
       kBackgroundSyncTask,
-      constraints: Constraints(
-        networkType: NetworkType.connected,
-        requiresBatteryNotLow: false,
-      ),
+      constraints: Constraints(networkType: NetworkType.connected, requiresBatteryNotLow: false),
       existingWorkPolicy: ExistingWorkPolicy.replace,
       backoffPolicy: BackoffPolicy.exponential,
       backoffPolicyDelay: const Duration(seconds: 10),
     );
-    debugPrint(
-      '[BACKGROUND SYNC] Scheduled one-off sync task (Replace policy)',
-    );
+    debugPrint('[BACKGROUND SYNC] Scheduled one-off sync task (Replace policy)');
   }
 }
